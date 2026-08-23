@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import "../../styles/citizen.css";
-import { getStoredGrievances, updateStaffDecision, updateGrievanceStatus } from "../../services/grievanceService";
+import { getStaffGrievances, getStaffGrievanceById, updateStaffDecision, updateGrievanceStatus } from "../../services/grievanceService";
 import type { StaffUser, Grievance, GrievanceStatus, GrievanceCategory } from "../../types";
 import { GrievanceKPIBar } from "./GrievanceKPIBar";
 
@@ -30,7 +30,6 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onNavigate
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [categoryFilter, setCategoryFilter] = useState<string>("");
   const [searchQuery, setSearchQuery] = useState<string>("");
-  const [authError, setAuthError] = useState<string>("");
 
   useEffect(() => {
     // Whenever logged in user changes, reload department-scoped grievances
@@ -54,9 +53,6 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onNavigate
     const authorized = getStaffGrievanceById(g.id, user);
     if (authorized) {
       setSelectedGrievance(authorized);
-      setAuthError("");
-    } else {
-      setAuthError(`Access Denied: Grievance ${g.id} belongs to a different department.`);
     }
   };
 
@@ -64,7 +60,6 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onNavigate
     if (!selectedGrievance) return;
     const authorized = getStaffGrievanceById(selectedGrievance.id, user);
     if (!authorized) {
-      setAuthError("Access Denied: Unauthorized modification attempt.");
       setSelectedGrievance(null);
       return;
     }
@@ -77,7 +72,6 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onNavigate
     if (!selectedGrievance) return;
     const authorized = getStaffGrievanceById(selectedGrievance.id, user);
     if (!authorized) {
-      setAuthError("Access Denied: Unauthorized status change attempt.");
       setSelectedGrievance(null);
       return;
     }
@@ -105,8 +99,7 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onNavigate
   );
   const topRedZoneGrievance = highSeverityGrievances[0] || null;
 
-  // Extract unique categories present in department queue for filter
-  const uniqueCategories = Array.from(new Set(grievances.map((g) => g.category)));
+
 
   return (
     <div className="citizen-portal-container">
@@ -231,7 +224,14 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onNavigate
               </h2>
             </div>
 
-            <div style={{ display: "flex", gap: "12px" }}>
+            <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "center" }}>
+              <input
+                className="form-input"
+                placeholder="Search by ID, description or location..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                style={{ width: "260px", fontSize: "12px" }}
+              />
               <select
                 className="form-select"
                 value={categoryFilter}
@@ -303,7 +303,7 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onNavigate
                       <button
                         className="service-card-btn"
                         style={{ padding: "4px 10px", fontSize: "11px" }}
-                        onClick={() => setSelectedGrievance(g)}
+                        onClick={() => handleOpenDossier(g)}
                       >
                         Open Dossier →
                       </button>
