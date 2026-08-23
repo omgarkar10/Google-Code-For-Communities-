@@ -16,12 +16,16 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from twilio.rest import Client
+try:
+    from twilio.rest import Client
+except ImportError:
+    Client = None
 import jwt
 from passlib.context import CryptContext
-
+import bcrypt
 from spin_agents.db import get_db
 from spin_agents.models import User
+from spin_agents.departments import normalize_department, CANONICAL_DEPARTMENTS
 from spin_agents.cache import (
     set_otp_cache,
     get_otp_cache,
@@ -46,6 +50,23 @@ TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
 # Pydantic schemas
 # ──────────────────────────────────────────────
 
+def hash_password(password: str) -> str:
+    pwd_bytes = password.encode('utf-8')[:72]
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(pwd_bytes, salt).decode('utf-8')
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    if not hashed_password or not plain_password:
+        return False
+    try:
+        plain_bytes = plain_password.encode('utf-8')[:72]
+        hash_bytes = hashed_password.encode('utf-8')
+        if hashed_password.startswith("$2b$") or hashed_password.startswith("$2a$") or hashed_password.startswith("$2y$"):
+            return bcrypt.checkpw(plain_bytes, hash_bytes)
+        return pwd_context.verify(plain_password[:72], hashed_password)
+    except Exception:
+        return False
+
 class OTPRequest(BaseModel):
     phone: str          # E.164 format, e.g. +919876543210
     name: str | None = None
@@ -57,11 +78,23 @@ class OTPVerify(BaseModel):
 class StaffLoginRequest(BaseModel):
     identifier: str     # official email or employee-ID
     password: str
+    department: str | None = None
 
 
-# ──────────────────────────────────────────────
-# Helpers
-# ──────────────────────────────────────────────
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+security = HTTPBearer(auto_error=False)
+
+def decode_token(token: str) -> dict:
+    try:
+        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired authentication token.")
+
+async def get_current_user_payload(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+    if not credentials or not credentials.credentials:
+        raise HTTPException(status_code=401, detail="Authentication required. Token missing.")
+    return decode_token(credentials.credentials)
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
     to_encode = data.copy()
@@ -173,24 +206,43 @@ async def verify_otp(req: OTPVerify, db: AsyncSession = Depends(get_db)):
 @router.post("/staff-login")
 async def staff_login(req: StaffLoginRequest, db: AsyncSession = Depends(get_db)):
     """
-    Staff Portal login – no OTP, no email delivery.
-    Validates official email (or employee-ID stored in the `email` column) and
-    bcrypt-hashed password against the database, then issues a signed JWT.
+    Staff Portal login – credential based + JWT authentication.
+    Validates official email/employee-ID and password against the database,
+    assigns/normalizes the canonical department, then issues a signed JWT.
     """
-    # Look up by email field (which stores either email address or employee-ID)
     stmt   = select(User).where(User.email == req.identifier)
     result = await db.execute(stmt)
     user   = result.scalars().first()
 
-    # Deliberate generic message – avoids username enumeration
-    if not user or not user.password_hash:
-        raise HTTPException(status_code=401, detail="Invalid credentials.")
+    if not user:
+        # Auto-provision staff user if first-time login
+        canonical_dept = normalize_department(req.department) if req.department else "Municipality"
+        user = User(
+            email=req.identifier,
+            password_hash=hash_password(req.password),
+            name=req.identifier.split("@")[0].replace(".", " ").title() if "@" in req.identifier else "Staff Official",
+            role="staff",
+            department=canonical_dept,
+            is_verified=True,
+        )
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+    else:
+        if user.password_hash and not verify_password(req.password, user.password_hash):
+            raise HTTPException(status_code=401, detail="Invalid credentials.")
+        elif not user.password_hash:
+            user.password_hash = hash_password(req.password)
+            await db.commit()
 
-    if not pwd_context.verify(req.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid credentials.")
+        # Update department if explicitly passed or if null
+        if req.department or not user.department:
+            user.department = normalize_department(req.department or user.department or "Municipality")
+            await db.commit()
+            await db.refresh(user)
 
-    STAFF_ROLES = {"staff", "admin", "department officer", "policymaker"}
-    if user.role not in STAFF_ROLES:
+    STAFF_ROLES = {"staff", "admin", "department officer", "policymaker", "administrator", "super admin"}
+    if user.role and user.role.lower() not in STAFF_ROLES:
         raise HTTPException(status_code=403, detail="Access denied. Not a staff account.")
 
     token = create_access_token({"sub": user.id, "role": user.role, "dept": user.department})
@@ -235,7 +287,7 @@ async def citizen_login(req: CitizenLoginRequest, db: AsyncSession = Depends(get
         user = User(
             email=req.identifier if is_email else None,
             phone_number=req.identifier if not is_email else None,
-            password_hash=pwd_context.hash(req.password),
+            password_hash=hash_password(req.password),
             name="Citizen User",
             role="citizen",
             is_verified=True
@@ -244,11 +296,11 @@ async def citizen_login(req: CitizenLoginRequest, db: AsyncSession = Depends(get
         await db.commit()
         await db.refresh(user)
     else:
-        if user.password_hash and not pwd_context.verify(req.password, user.password_hash):
+        if user.password_hash and not verify_password(req.password, user.password_hash):
             raise HTTPException(status_code=401, detail="Invalid credentials.")
         elif not user.password_hash:
             # Set initial password
-            user.password_hash = pwd_context.hash(req.password)
+            user.password_hash = hash_password(req.password)
             await db.commit()
             await db.refresh(user)
 

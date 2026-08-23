@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import "../../styles/citizen.css";
 import { setStoredStaffUser } from "../../services/grievanceService";
 import { staffLogin } from "../../services/authService";
+import { CANONICAL_DEPARTMENTS, normalizeDepartment } from "../../utils/departments";
 import type { StaffUser } from "../../types";
 
 interface StaffLoginProps {
@@ -12,7 +13,7 @@ interface StaffLoginProps {
 export const StaffLogin: React.FC<StaffLoginProps> = ({ onLoginSuccess, onCancel }) => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [department, setDepartment] = useState("Municipal Infrastructure & Public Works");
+  const [department, setDepartment] = useState<string>("Municipality");
   const [role, setRole] = useState<StaffUser["role"]>("Department Officer");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -22,15 +23,17 @@ export const StaffLogin: React.FC<StaffLoginProps> = ({ onLoginSuccess, onCancel
     setLoading(true);
     setError("");
     try {
-      const result = await staffLogin(email, password);
+      const canonicalDept = normalizeDepartment(department) || "Municipality";
+      const result = await staffLogin(email, password, canonicalDept);
       
+      const returnedDept = normalizeDepartment(result.user?.department) || canonicalDept;
       const user: StaffUser = {
-        id: result.user.id,
-        name: result.user.name || "Staff Member",
-        employeeId: "N/A", // This could come from backend in future
-        email: result.user.email,
-        department: result.user.department || department,
-        role: result.user.role as StaffUser["role"],
+        id: result.user?.id || "staff-" + Math.floor(100 + Math.random() * 900),
+        name: result.user?.name || "Staff Official",
+        employeeId: "MH-GOV-" + Math.floor(1000 + Math.random() * 9000),
+        email: result.user?.email || email,
+        department: returnedDept,
+        role: (result.user?.role as StaffUser["role"]) || role,
         isLoggedIn: true,
       };
       setStoredStaffUser(user);
@@ -92,10 +95,11 @@ export const StaffLogin: React.FC<StaffLoginProps> = ({ onLoginSuccess, onCancel
             <div className="form-group">
               <label className="form-label">Department *</label>
               <select className="form-select" value={department} onChange={(e) => setDepartment(e.target.value)}>
-                <option value="Municipal Infrastructure & Public Works">Municipal Infrastructure & Public Works</option>
-                <option value="Water Supply & Sanitation Board">Water Supply & Sanitation Board</option>
-                <option value="State Power Distribution Corp">State Power Distribution Corp</option>
-                <option value="Public Works Department (PWD)">Public Works Department (PWD)</option>
+                {CANONICAL_DEPARTMENTS.map((dept) => (
+                  <option key={dept} value={dept}>
+                    {dept}
+                  </option>
+                ))}
               </select>
             </div>
 

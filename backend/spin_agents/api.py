@@ -226,17 +226,106 @@ async def firebase_webhook(request: Request):
     return await citizen_webhook(message)
 
 from sqlalchemy.future import select
+from fastapi import Depends
 from spin_agents.db import AsyncSessionLocal
 from spin_agents.models import Grievance
+from spin_agents.auth import get_current_user_payload, security
+from spin_agents.departments import (
+    normalize_department,
+    matches_department,
+    get_department_for_category,
+    get_categories_for_department,
+)
 
-@app.get("/api/grievances")
-async def list_grievances(limit: int = 50):
-    """Retrieve all recorded grievances from the SQLite database."""
+@app.get("/api/staff/grievances")
+async def list_staff_grievances(
+    user_payload: dict = Depends(get_current_user_payload),
+    limit: int = 100
+):
+    """
+    Department-restricted endpoint for staff dashboard.
+    Backend validates authenticated user's department from JWT payload.
+    Super Admin / Admin / Policymaker role can access all grievances across departments.
+    Regular department staff can ONLY access grievances belonging to their assigned department.
+    """
+    role = (user_payload.get("role") or "").lower()
+    dept = normalize_department(user_payload.get("dept"))
+
+    IS_ADMIN_ROLE = role in {"admin", "administrator", "policymaker", "super admin"}
+
+    if not IS_ADMIN_ROLE and not dept:
+        return {
+            "status": "error",
+            "message": "Department not assigned. Please contact the administrator.",
+            "department": None,
+            "count": 0,
+            "grievances": []
+        }
+
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(Grievance).order_by(Grievance.created_at.desc()).limit(limit)
         )
-        grievances = result.scalars().all()
+        all_grievances = result.scalars().all()
+
+        filtered_list = []
+        for g in all_grievances:
+            if IS_ADMIN_ROLE:
+                filtered_list.append(g)
+            elif matches_department(
+                grievance_dept=getattr(g, "department", None) or getattr(g, "domain", None),
+                grievance_category=getattr(g, "category", None),
+                grievance_domain=getattr(g, "domain", None),
+                staff_dept=dept
+            ):
+                filtered_list.append(g)
+
+        return {
+            "status": "success",
+            "department": dept if not IS_ADMIN_ROLE else "All Departments (Admin)",
+            "count": len(filtered_list),
+            "grievances": [
+                {
+                    "id": g.id,
+                    "grievance_id": g.grievance_id,
+                    "user_id": g.user_id,
+                    "domain": g.domain,
+                    "category": g.category,
+                    "severity": g.severity,
+                    "priority": g.priority,
+                    "latitude": g.latitude,
+                    "longitude": g.longitude,
+                    "landmark": g.landmark,
+                    "original_text": g.original_text,
+                    "district": g.district,
+                    "status": g.status,
+                    "department": normalize_department(getattr(g, "department", None)) or get_department_for_category(g.category),
+                    "created_at": g.created_at.isoformat() if g.created_at else None,
+                }
+                for g in filtered_list
+            ],
+        }
+
+@app.get("/api/grievances")
+async def list_grievances(department: str | None = None, limit: int = 50):
+    """Retrieve grievances with optional department filtering."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Grievance).order_by(Grievance.created_at.desc()).limit(limit)
+        )
+        all_grievances = result.scalars().all()
+
+        target_dept = normalize_department(department) if department else None
+        grievances = []
+        for g in all_grievances:
+            if not target_dept or matches_department(
+                grievance_dept=getattr(g, "department", None) or getattr(g, "domain", None),
+                grievance_category=getattr(g, "category", None),
+                grievance_domain=getattr(g, "domain", None),
+                staff_dept=target_dept
+            ):
+                grievances.append(g)
+
         return {
             "count": len(grievances),
             "grievances": [
@@ -254,6 +343,7 @@ async def list_grievances(limit: int = 50):
                     "original_text": g.original_text,
                     "district": g.district,
                     "status": g.status,
+                    "department": normalize_department(getattr(g, "department", None)) or get_department_for_category(g.category),
                     "created_at": g.created_at.isoformat() if g.created_at else None,
                 }
                 for g in grievances

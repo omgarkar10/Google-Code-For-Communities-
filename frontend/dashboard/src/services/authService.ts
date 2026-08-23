@@ -53,13 +53,13 @@ export async function verifyOtp(phone: string, code: string) {
   return data;
 }
 
-export async function staffLogin(identifier: string, password: string) {
+export async function staffLogin(identifier: string, password: string, department?: string) {
   const response = await fetch(`${API_URL}/auth/staff-login`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ identifier, password }),
+    body: JSON.stringify({ identifier, password, department }),
   });
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));

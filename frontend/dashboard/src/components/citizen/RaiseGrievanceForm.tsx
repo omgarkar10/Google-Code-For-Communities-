@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import "../../styles/citizen.css";
 import { saveGrievance } from "../../services/grievanceService";
+import { getDepartmentForCategory } from "../../utils/departments";
 import type {
   CitizenUser,
   Grievance,
@@ -313,7 +314,7 @@ export const RaiseGrievanceForm: React.FC<RaiseGrievanceFormProps> = ({
         reasoning: `Spatial correlation detected 37 similar ${(category || "other").toLowerCase()} grievances within a 12 km² cluster near ${location.district || "Unknown"}.`,
       },
       status: "SUBMITTED",
-      department: `${location.district || "Local"} Municipal ${category || "General"} Department`,
+      department: getDepartmentForCategory(category),
       assignedTo: "Chief Engineer (Infrastructure)",
       createdAt: new Date().toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }),
       updatedAt: new Date().toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }),
